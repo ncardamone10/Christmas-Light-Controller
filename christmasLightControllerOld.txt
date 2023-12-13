@@ -1,0 +1,240 @@
+#include <ArduinoWiFiServer.h>
+#include <BearSSLHelpers.h>
+#include <CertStoreBearSSL.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266WiFiAP.h>
+#include <ESP8266WiFiGeneric.h>
+#include <ESP8266WiFiGratuitous.h>
+#include <ESP8266WiFiMulti.h>
+#include <ESP8266WiFiSTA.h>
+#include <ESP8266WiFiScan.h>
+#include <ESP8266WiFiType.h>
+#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
+#include <WiFiClientSecureBearSSL.h>
+#include <WiFiServer.h>
+#include <WiFiServerSecure.h>
+#include <WiFiServerSecureBearSSL.h>
+#include <WiFiUdp.h>
+#include <ESP8266WebServer.h>
+#include <WiFiUdp.h>
+#include <TimeLib.h>
+
+
+// Replace with your network credentials
+const char* ssid = "iTurnedMyselfIntoARouterMorty";
+const char* password = "pickleRic&k";
+
+// NTP Servers:
+static const char ntpServerName[] = "pool.ntp.org";
+const int timeZone = -5;  // Eastern Standard Time (USA)
+
+
+// Set the GPIO pin where your relay is connected
+const int relayPin = 14;
+
+
+
+WiFiUDP Udp;
+unsigned int localPort = 8888;  // local port to listen for UDP packets
+
+const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
+byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming & outgoing packets
+
+
+
+time_t getNtpTime();
+void sendNTPpacket(IPAddress &address);
+
+
+ESP8266WebServer server(80);
+
+
+bool lightState = false;
+#define ON_TIME_HOUR 16
+#define OFF_TIME_HOUR 1 // needs to be after midnight
+
+
+void setup() {
+  Serial.begin(115200);
+  //pinMode(relayPin, OUTPUT);
+  digitalWrite(relayPin, LOW);
+
+  // Connect to Wi-Fi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to WiFi...");
+  }
+  Serial.println("Connected to WiFi");
+
+  // Print the IP address
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // Define routes
+  server.on("/", handleRoot);
+  server.on("/on", handleLightsOn);
+  server.on("/off", handleLightsOff);
+    // Define new route for time check
+  server.on("/checktime", handleCheckTime);
+
+  Udp.begin(localPort);
+  setSyncProvider(getNtpTime);
+  setSyncInterval(43200);  // Sync time every 12 hrs minutes
+
+
+  // Start server
+  server.begin();
+
+  int currentHour = hour();
+  if (currentHour < ON_TIME_HOUR && currentHour > OFF_TIME_HOUR){
+    // Turn off lights
+    if (lightState == true){
+      handleLightsOff();
+    }
+    
+  } else {
+    // Turn on lights
+    if (lightState == false){
+      handleLightsOn();
+    }
+    
+  }
+
+  
+}
+
+
+
+
+void loop() {
+  server.handleClient();
+  int currentHour = hour();
+  if (currentHour == ON_TIME_HOUR){
+    // Turn on lights
+    if (lightState == false){
+      handleLightsOn();
+    }
+    
+  } else if (currentHour == OFF_TIME_HOUR) {
+    // Turn off lights
+    if (lightState == true){
+      handleLightsOff();
+    }
+    
+  }
+
+//String currentTime = String(hour()) + ":" + String(minute()) + ":" + String(second());
+
+}
+
+
+void handleRoot() {
+  String html = "<html><head><title>Christmas Lights Controller</title><style>"
+                "body { font-family: Arial, sans-serif; background-color: #7DBD7D; color: #FFF; text-align: center; }"
+                "h1 { color: #FF6F61; }"
+                "button { background-color: #FFD700; color: #FFF; border: none; padding: 15px 32px; text-align: center;"
+                "text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; }"
+                "#status, #timeStatus { color: #FFF; margin-top: 20px; font-size: 20px; }"
+                "</style><script>"
+                "function toggleLight(state) {"
+                "var xhttp = new XMLHttpRequest();"
+                "xhttp.onreadystatechange = function() {"
+                "if (this.readyState == 4 && this.status == 200) {"
+                "document.getElementById('status').innerHTML = this.responseText;"
+                "}};"
+                "xhttp.open('GET', state, true);"
+                "xhttp.send();"
+                "}"
+                "function checkTime() {"
+                "var xhttp = new XMLHttpRequest();"
+                "xhttp.onreadystatechange = function() {"
+                "if (this.readyState == 4 && this.status == 200) {"
+                "document.getElementById('timeStatus').innerHTML = this.responseText;"
+                "}};"
+                "xhttp.open('GET', 'checktime', true);"
+                "xhttp.send();"
+                "}"
+                "</script></head><body>"
+                "<h1>Christmas Lights Controller</h1>"
+                "<button onclick=\"toggleLight('on')\">Turn On</button>"
+                "<button onclick=\"toggleLight('off')\">Turn Off</button>"
+                "<p id='status'></p>"
+                "<button onclick=\"checkTime()\">Check Current Time</button>"
+                "<p id='timeStatus'></p>"
+                "</body></html>";
+
+  server.send(200, "text/html", html);
+}
+
+
+void handleCheckTime() {
+  String currentTime = String(hour()) + ":" + String(minute()) + ":" + String(second());
+  server.send(200, "text/plain", "Current NTP Time: " + currentTime);
+}
+
+void handleLightsOn() {
+  pinMode(relayPin, OUTPUT);
+  digitalWrite(relayPin, HIGH);
+  lightState = true;
+  Serial.println("Lights turned ON");
+  server.send(200, "text/plain", "Lights turned ON");
+}
+
+void handleLightsOff() {
+  digitalWrite(relayPin, LOW);
+  pinMode(relayPin, INPUT);
+  lightState = false;
+  Serial.println("Lights turned OFF");
+  server.send(200, "text/plain", "Lights turned OFF");
+}
+
+time_t getNtpTime() {
+  IPAddress ntpServerIP; // NTP server's IP address
+
+  while (Udp.parsePacket() > 0) ; // discard any previously received packets
+  Serial.println("Transmit NTP Request");
+  // get a random server from the pool
+  WiFi.hostByName(ntpServerName, ntpServerIP);
+  sendNTPpacket(ntpServerIP);
+  uint32_t beginWait = millis();
+  while (millis() - beginWait < 1500) {
+    int size = Udp.parsePacket();
+    if (size >= NTP_PACKET_SIZE) {
+      Serial.println("Receive NTP Response");
+      Udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
+      unsigned long secsSince1900;
+      // convert four bytes starting at location 40 to a long integer
+      secsSince1900 =  (unsigned long)packetBuffer[40] << 24;
+      secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
+      secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
+      secsSince1900 |= (unsigned long)packetBuffer[43];
+      return secsSince1900 - 2208988800UL + SECS_PER_HOUR * timeZone;
+    }
+  }
+  Serial.println("No NTP Response :-(");
+  return 0; // return 0 if unable to get the time
+}
+
+void sendNTPpacket(IPAddress &address) {
+  // set all bytes in the buffer to 0
+  memset(packetBuffer, 0, NTP_PACKET_SIZE);
+  // Initialize values needed to form NTP request
+  // (see URL above for details on the packets)
+  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
+  packetBuffer[1] = 0;     // Stratum, or type of clock
+  packetBuffer[2] = 6;     // Polling Interval
+  packetBuffer[3] = 0xEC;  // Peer Clock Precision
+  // 8 bytes of zero for Root Delay & Root Dispersion
+  packetBuffer[12]  = 49;
+  packetBuffer[13]  = 0x4E;
+  packetBuffer[14]  = 49;
+  packetBuffer[15]  = 52;
+
+  // all NTP fields have been given values, now
+  // you can send a packet requesting a timestamp:                 
+  Udp.beginPacket(address, 123); //NTP requests are to port 123
+  Udp.write(packetBuffer, NTP_PACKET_SIZE);
+  Udp.endPacket();
+}
